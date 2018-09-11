@@ -10,6 +10,13 @@ from abc import ABCMeta, abstractmethod
 class Abs_ModelClass(object):
     __meta__ = ABCMeta
     
+    # 后续必须实现的类属性
+    featureColumns = []
+    targetColumns = []
+    weatherIndex = []
+    gasIndex = []
+    ModelStoreFiles = []
+    
     def __init__(self,stageData,FeatureColumns,TargetColumns,logDir):
         """
             stageData:DataFrame
