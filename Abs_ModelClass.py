@@ -45,7 +45,7 @@ class Abs_ModelClass(object):
         return diff
     
     @abstractmethod    
-    def predictModel(self,predictX,pLength,testLabel,testLength):
+    def predictModel(self,predictX,pLength,testLabel=False,testLength=60*48,predictIndex=0):
         """
             predictX:Array
               用于预测的特征数据集矩阵
