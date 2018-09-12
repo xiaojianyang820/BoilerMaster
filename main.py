@@ -135,6 +135,197 @@ class MainModel(object):
         startDate = tools_DataTimeTrans(self.startDate)
         endDate = self.Clock.now()
         splitStages = []
+        dayDelta = (endDate-startDate).days
+        for k in range(dayDelta//self.interval):
+            if len(splitStages) == 0:
+                splitStages.append(startDate,startDate+datetime.timedelta(self.interval))
+            else:
+                startSplit = splitStages[-1][1]
+                splitStages.append((startSplit,startSplit+datetime.timedelta(self.interval)))
+        lastSplitStart = splitStages[-1][1] - datetime.timedelta(np.random.randint(low=self.interval//4,high=self.interval//2))
+        splitStages.append((lastSplitStart,endDate))
+        return splitStages
+    
+    def geneTestData(self,stageData,testLength):
+        startDate = stageData.index[-1] + datetime.timedelta(0,60)
+        endDate = stageData.index[-1] + datetime.timedelta(0,60*testLength)
+        testDataFrame = self.dataReader(startDate,endDate).readData()
+        testDataFrame = testDataFrame.fillna(method="ffill").fillna(method="bfill")
+        return testDataFrame[self.featureColumns].as_matrix(),testDataFrame[self.targetColumns].as_matrix()
+    
+    def genePsudoData(self,stageData,weather,GasDis):
+        GasDis = np.array(GasDis)
+        feature = stageData[self.featureColumns].fillna(method='ffill').fillna(method='bfill').as_matrix()
+        PsudoData = np.array([feature[-1]]*self.pLength)
+        PsudoDatas = []
+        if len(weather) > 1:
+            PsudoData[:,self.weatherIndex] = weather
+        
+        for gasAmount in range(self.downGasAmount,self.upGasAmount,100):
+            tempPsudoData = copy.deepcopy(PsudoData)
+            tempPsudoData[:,self.gasIndex] = np.array([GasDis]*len(tempPsudoData))*gasAmount
+            PsudoDatas.append(tempPsudoData)
+            
+        return PsudoDatas
+    
+    def main(self):
+        # 如果是重启模型的话，就需要读取历史数据对模型重新训练
+        if self.reStartModel:
+            # 首先将原有的正则化文件和模型参数文件删除
+            self.removeOriginalFiles(self.ModelStoreFiles)
+            # 对已有的历史数据进行分组
+            splitStage = self.splitTrainData()
+            # 根据每一段时期的训练数据来训练模型
+            for k,dates in enumerate(splitStage):
+                SD,ED = dates
+                print('正在加载历史数据（%s -- %s）'%(SD,ED))
+                stageData = self.dataReader(SD,ED).readData()
+                print('该阶段的历史数据加载结束')
+                print('开始初始化模型')
+                self.model = self.ModelClass(stageData,self.featureColumns,
+                                    self.targetColumns,logDir=self.logDir)
+                print('对模型进行训练')
+                diff = self.model.trainModel(trainQuota=1,ecorr=1,controlStage=False)
+        else:
+            diff = 0.0
+            
+        print('++++++++++++++++运营阶段++++++++++++++')
+        
+        # 初始化必要的参数
+        # 学习误差率的初始值为1
+        ecorr = 1
+        # 如果预测结果没有通过事前检测，可以重新训练的次数
+        retryNum = 3
+        # 记录控制周期
+        controlLoops = 1
+        # 多锅炉之间的总燃气的初始分配方案
+        GasDis = self.initGasDis
+        for t in range(100):
+            print('开始第%d次系统控制'%controlLoops)
+            currentTime = self.Clock.now()
+            startTime = currentTime - datetime.timedelta(np.random.randint(9,15))
+            print('对当前阶段历史数据进行加载（%s -- %s）'%(startTime,currentTime))
+            stageData = self.dataReader(startTime,currentTime).readData()
+            self.model = self.ModelClass(stageData,self.featureColumns,self.targetColumns,
+                                logDir = self.logDir)
+            print(u'对模型进行训练')
+            diff = self.model.trainModel(0.5,ecorr,True)
+            if self.testLabel:
+                print('对模型当前的预测结果进行检验')
+                testFeature,testTarget = self.geneTestData(stageData,60*48)
+                predictTarget = self.model.predictModel(testFeature,self.pLength,
+                                            self.testLabel,60*48)
+                figure = plt.figure()
+                ax = figure.add_subplot(111)
+                ax.plot(predictTarget.ravel(),c='blue',lw=2,alpha=0.6,label="Prediction")
+                ax.plot(testTarget.ravel(),c='red',lw=1.5,alpha=0.7,label='Reality')
+                ax.legend(loc='best')
+                figure.savefig('当前模型的预测结果（%s）.png'%currentTime,dpi=300)
+                
+            # 结合虚拟数据进行预测
+            print('正在产生虚拟数据集')
+            PsudoWeather = self.genePsudoWeather(stageData[self.featureColumns],
+                                        self.weatherIndex,self.pLength)
+            PsudoDatas = self.genePsudoData(stageData,PsudoWeather,GasDis)
+            PredictGroups = []
+            print('对虚拟数据集进行预测')
+            for k,PsudoData in enumerate(PsudoDatas):
+                print('.',end=' ')
+                predictGroup = self.model.predictModel(PsudoData,self.pLength,predictIndex=k)
+                PredictGroups.append(predictGroup)
+            print()
+            predictGroups = np.vstack(PredictGroups)
+            # 根据预测偏置误差调整预测结果组
+            predictGroups = predictGroups - diff
+            if self.InnerChecker(predictGroups) < 200 or retryNum == 0:
+                retryNum = 3
+                print('正在计算最恰当的目标回水温度')
+                targetBT,stableBT = self.geneTargetBT(stageData)
+                print('目标回水温度：%.2f，稳定回水温度：%.2f'%(targetBT,stableBT))
+                pursueBT = self.stableWeight * stableBT + \
+                             self.purcheWeight * max(min(targetBT,stableBT+2),stableBT-2)
+                print('根据权值分配，最合适的追踪回水温度为：%.2f'%pursueBT)
+                pursueGas,stableGas = self.geneValidGas(predictGroups,pursueBT,stableBT)
+                print('追踪回水温度所需要的燃气量为：%d，保持当前的回水温度所需要的燃气量为：%d'%(pursueGas,stableGas))
+                savePath = os.path.join(self.logDir,'第%d个控制周期预测.txt'%controlLoops)
+                np.savetxt(savePath,predictGroups,fmt='%.2f')
+                
+                endTime = currentTime + datetime.timedelta(0,60*self.pLength)
+                while True:
+                    cc = self.Clock.now()
+                    if (endTime - cc).seconds < 20 or cc > endTime:
+                        break
+                    self.Clock.sleep(10)
+                print
+                print('对模型进行事后检验')
+                SD = currentTime + datetime.timedelta(0,60)
+                ED = endTime
+                newData = self.dataReader(SD,ED).readData()
+                newData = newData.fillna(method='ffill').fillna(method='bfill')
+                GasDis,totalCorr = self.OutterChecker(predictGroups,newData,
+                                        self.downGasAmount,self.upGasAmount,
+                                        self.logDir,controlLoops)
+                ecorr = 1 - totalCorr
+                controlLoops += 1
+            else:
+                print('未通过事前检验，需要重新训练')
+                retryNum -= 1
+                continue
+            
+    def InnerChecker(self,predictGroups):
+        """
+            该方法要确保预测集中高燃气量对应高回水温度
+        """
+        diffs = []
+        for k in range(predictGroups.shape[0]-1):
+            i = predictGroups[k]
+            j = predictGroups[k+1]
+            diff = j - i
+            diffs.append(diff)
+        diffs = np.array(diffs)
+        return sum((diffs < -0.03).ravel())
+    
+    def geneTargetBT(self,dataFrame):
+        dataFrame = dataFrame.fillna(method='ffill').fillna(method='bfill')
+        # 读取当前的时间和当前的室外温度
+        currentTime = dataFrame.index[-1]
+        currentHour = currentTime.hour
+        currentOutTemp = dataFrame[u'气象站室外温度'].as_matrix().ravel()[-1]
+        
+        outT2BT_Data = []
+        index = dataFrame.index
+        outT = dataFrame[u'气象站室外温度'].as_matrix().ravel()
+        BT = dataFrame[self.targetColumns].as_matrix().ravel()
+        for k,i in enumerate(index):
+            outT2BT_Data.append([i.hour,outT[k],BT[k]])
+            
+        def specificHourMap(hour):
+            def func(x,a,b):
+                return a*x + b
+            
+            specificHourData = []
+            for item in outT2BT_Data:
+                if item[0] == hour:
+                    specificHourData.append([item[1],item[2]])
+            specificHourData = np.array(specificHourData)
+            paras,COV = curve_fit(func,specificHourData[:,0],specificHourData[:,1],p0=(0,0))
+            print("参数估计时的协方差矩阵：")
+            print(COV)
+            validFunc = lambda x: paras[0] * x + paras[1]
+            return validFunc
+        
+        MapFunc = specificHourMap(int(currentHour+(self.pLength//60)/2.0)%24)
+        return MapFunc(currentOutTemp),BT[-1]
+    
+    def geneValidGas(self,predictGroups,pursueBT,stableBT):
+        down = self.downGasAmout
+        minPursueIndex = np.argmin(np.abs(np.mean(predictGroups[:,-3:],axis=1) - pursueBT))
+        pursueGas = down + minPursueIndex * 100
+        minStableIndex = np.argmin(np.abs(np.mean(predictGroups[:,-3:],axis=1) - stableBT))
+        stableGas = down + minStableIndex * 100
+        return pursueGas,stableGas
+
+    
         
         
         
