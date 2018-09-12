@@ -318,7 +318,7 @@ class MainModel(object):
         return MapFunc(currentOutTemp),BT[-1]
     
     def geneValidGas(self,predictGroups,pursueBT,stableBT):
-        down = self.downGasAmout
+        down = self.downGasAmount
         minPursueIndex = np.argmin(np.abs(np.mean(predictGroups[:,-3:],axis=1) - pursueBT))
         pursueGas = down + minPursueIndex * 100
         minStableIndex = np.argmin(np.abs(np.mean(predictGroups[:,-3:],axis=1) - stableBT))
