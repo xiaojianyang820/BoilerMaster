@@ -256,7 +256,48 @@ class CNNModel(object):
         print(u'模型当前的预测误差为%.2f'%diff)
         
         return diff
-
+    
+    def modelKernalTrain(self,X,Y,testNum,criterion,optimizer,totalEpoch,modelParaPath,index):
+        XTrain = X[:-testNum]; YTrain = Y[:-testNum]
+        XTest = X[-testNum:]; YTest = Y[-testNum:]
+        CUDA_X = torch.from_numpy(XTrain).cuda()
+        CUDA_Y = torch.from_numpy(YTrain).reshape(len(YTrain),1,-1).cuda()
+        Variable_X = Variable(CUDA_X)
+        Variable_Y = Variable(CUDA_Y)
+        CUDA_XTEST = torch.from_numpy(XTest).cuda()
+        Variable_XTEST = Variable(CUDA_XTEST)
+        
+        for epoch in range(totalEpoch):
+            
+            out = self.model(Variable_X)
+            loss = criterion(out,Variable_Y)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            if (epoch + 1)%100 == 0:
+                print(u'第%d次迭代循环后，第%s子模型剩余的拟合误差为：%.4f!'%(epoch+1,index,loss.data[0]))
+                for ttt in range(5):
+                    self.covKernelLoss()
+        for ttt in range(5):
+            self.covKernelLoss()
+        print(u'正在存储第%s子模型结构参数'%index)
+        torch.save(self.model.state_dict(),modelParaPath)
+        self.model.eval()
+        predict = self.model(Variable_XTEST).cpu().data.numpy()[:,0:1,0]
+        predict = self.targetScaler.inverse_transform(predict)
+        YTest_N = self.targetScaler.inverse_transform(YTest.reshape(-1,1))
+        diff = np.mean(predict.ravel()) - np.mean(YTest_N.ravel())
+        print(u'第%s子模型预测值为%.2f,实际值是%.2f'%(index,np.mean(predict.ravel()),np.mean(YTest_N.ravel())))
+        print(u'第%s子模型当前的预测误差为%.2f'%(index,diff))
+        del CUDA_X
+        del CUDA_Y
+        del Variable_X
+        del Variable_Y
+        del CUDA_XTEST
+        del Variable_XTEST
+        torch.cuda.empty_cache()
+        return diff
+    
     # 控制周期训练
     def controlTrain(self,totalEpoch,corr):
         baseParasPath = self.MainModelParas
@@ -308,34 +349,8 @@ class CNNModel(object):
         LR = self.learningRate * corr[0]
         criterion = nn.L1Loss()
         optimizer = optim.Adam(self.model.parameters(),lr=LR,weight_decay=WD)
-        CUDA_X = torch.from_numpy(X[:-testNum]).cuda()
-        CUDA_Y = torch.from_numpy(Y[:-testNum].reshape(Y.shape[0]-testNum,1,-1)).cuda()
-        CUDA_XTEST = torch.from_numpy(X[-testNum:]).cuda()
-        YTest = Y[-testNum:]
-        Variable_X = Variable(CUDA_X)
-        Variable_Y = Variable(CUDA_Y)
-        Variable_XTEST = Variable(CUDA_XTEST)
-        for epoch in range(totalEpoch):
-            out = self.model(Variable_X)
-            loss = criterion(out,Variable_Y)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            if (epoch + 1)%100 == 0:
-                print(u'第%d次迭代循环后，第一子模型剩余的拟合误差为：%.4f!'%(epoch,loss.data[0]))
-                for ttt in range(5):
-                    self.covKernelLoss()
-        for ttt in range(5):
-            self.covKernelLoss()
-        print(u'正在存储第一子模型结构参数')
-        torch.save(self.model.state_dict(),model_1_ParaPath)
-        self.model.eval()
-        predict = self.model(Variable_XTEST).cpu().data.numpy()[:,0:1,0]
-        predict = self.targetScaler.inverse_transform(predict)
-        YTest_N = self.targetScaler.inverse_transform(YTest.reshape(-1,1))
-        diff = np.mean(predict.ravel()) - np.mean(YTest_N.ravel())
-        print(u'第一子模型预测值为%.2f,实际值是%.2f'%(np.mean(predict.ravel()),np.mean(YTest_N.ravel())))
-        print(u'第一子模型当前的预测误差为%.2f'%diff)
+        diff = self.modelKernalTrain(X,Y,testNum,criterion,optimizer,totalEpoch,model_1_ParaPath,'一')
+        
         diff_1 = diff
         self.diff_1 = diff_1
 
@@ -346,27 +361,7 @@ class CNNModel(object):
         LR = self.learningRate * corr[1]
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.model.parameters(),lr=LR,weight_decay=WD)       
-        for epoch in range(totalEpoch):
-            out = self.model(Variable_X)
-            loss = criterion(out,Variable_Y)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            if (epoch + 1)%100 == 0:
-                print(u'第%d次迭代循环后，第二子模型剩余的拟合误差为：%.4f!'%(epoch,loss.data[0]))
-                for ttt in range(5):
-                    self.covKernelLoss()
-        for ttt in range(5):
-            self.covKernelLoss()
-        print(u'正在存储第二子模型结构参数')
-        torch.save(self.model.state_dict(),model_2_ParaPath)
-        self.model.eval()
-        predict = self.model(Variable_XTEST).cpu().data.numpy()[:,0:1,0]
-        predict = self.targetScaler.inverse_transform(predict)
-        YTest_N = self.targetScaler.inverse_transform(YTest.reshape(-1,1))
-        diff = np.mean(predict.ravel()) - np.mean(YTest_N.ravel())
-        print(u'第二子模型预测值为%.2f,实际值是%.2f'%(np.mean(predict.ravel()),np.mean(YTest_N.ravel())))
-        print(u'第二子模型当前的预测误差为%.2f'%diff)
+        diff = self.modelKernalTrain(X,Y,testNum,criterion,optimizer,totalEpoch,model_2_ParaPath,'二')
         diff_2 = diff
         self.diff_2 = diff_2
 
@@ -423,31 +418,7 @@ class CNNModel(object):
         Y_3 = np.array(Y_3,dtype=np.float32)
 
         # 对第三个模型进行训练
-        CUDA_X_3 = torch.from_numpy(X_3[:-testNum]).cuda()
-        CUDA_Y_3 = torch.from_numpy(Y_3[:-testNum].reshape(Y_3.shape[0]-testNum,1,-1)).cuda()
-        Variable_X_3 = Variable(CUDA_X_3)
-        Variable_Y_3 = Variable(CUDA_Y_3)
-        for epoch in range(totalEpoch):
-            out = self.model(Variable_X_3)
-            loss = criterion(out,Variable_Y_3)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            if (epoch + 1)%100 == 0:
-                print(u'第%d次迭代循环后，第三子模型剩余的拟合误差为：%.4f!'%(epoch,loss.data[0]))
-                for ttt in range(5):
-                    self.covKernelLoss()
-        for ttt in range(5):
-            self.covKernelLoss()
-        print(u'正在存储第三子模型结构参数')
-        torch.save(self.model.state_dict(),model_3_ParaPath)
-        self.model.eval()
-        predict = self.model(Variable_XTEST).cpu().data.numpy()[:,0:1,0]
-        predict = self.targetScaler.inverse_transform(predict)
-        YTest_N = self.targetScaler.inverse_transform(YTest.reshape(-1,1))
-        diff = np.mean(predict.ravel()) - np.mean(YTest_N.ravel())
-        print(u'第三子模型预测值为%.2f,实际值是%.2f'%(np.mean(predict.ravel()),np.mean(YTest_N.ravel())))
-        print(u'第三子模型当前的预测误差为%.2f'%diff)
+        diff = self.modelKernalTrain(X_3,Y_3,testNum,criterion,optimizer,totalEpoch,model_3_ParaPath,'三')
         diff_3 = diff
         self.diff_3 = diff_3
         
@@ -459,7 +430,7 @@ class CNNModel(object):
         LR = self.learningRate * corr[3]
         criterion = nn.MSELoss()
         #optimizer = optim.Adam(self.model.parameters(),lr=LR,weight_decay=WD)
-        optimizer = optim.Adam(self.model.parameters(),lr=LR)
+        optimizer = optim.Adam(self.model.parameters(),lr=LR,weight_decay=WD)
         '''
         # 增加相关性样本
         if True:
@@ -503,31 +474,7 @@ class CNNModel(object):
         Y_4 = np.array(Y_4,dtype=np.float32)
         
         # 对第四个模型进行训练
-        CUDA_X_4 = torch.from_numpy(X_4[:-testNum]).cuda()
-        CUDA_Y_4 = torch.from_numpy(Y_4[:-testNum].reshape(Y_4.shape[0]-testNum,1,-1)).cuda()
-        Variable_X_4 = Variable(CUDA_X_4)
-        Variable_Y_4 = Variable(CUDA_Y_4)
-        for epoch in range(totalEpoch):
-            out = self.model(Variable_X_4)
-            loss = criterion(out,Variable_Y_4)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            if (epoch + 1)%100 == 0:
-                print(u'第%d次迭代循环后，第四子模型剩余的拟合误差为：%.4f!'%(epoch,loss.data[0]))
-                for ttt in range(5):
-                    self.covKernelLoss()
-        for ttt in range(5):
-            self.covKernelLoss()
-        print(u'正在存储第四子模型结构参数')
-        torch.save(self.model.state_dict(),model_4_ParaPath)
-        self.model.eval()
-        predict = self.model(Variable_XTEST).cpu().data.numpy()[:,0:1,0]
-        predict = self.targetScaler.inverse_transform(predict)
-        YTest_N = self.targetScaler.inverse_transform(YTest.reshape(-1,1))
-        diff = np.mean(predict.ravel()) - np.mean(YTest_N.ravel())
-        print(u'第四子模型预测值为%.2f,实际值是%.2f'%(np.mean(predict.ravel()),np.mean(YTest_N.ravel())))
-        print(u'第四子模型当前的预测误差为%.2f'%diff)
+        diff = self.modelKernalTrain(X_4,Y_4,testNum,criterion,optimizer,totalEpoch,model_4_ParaPath,'四')
         diff_4 = diff
         self.diff_4 = diff_4
         
@@ -642,9 +589,11 @@ class CNNModel(object):
                 wcorr = np.array(wcorr)/sum(wcorr)
         else:
             wcorr = np.array([0.25,0.25,0.25,0.25])
-        return predictY_1 * wcorr[0] + predictY_2 * wcorr[1] + predictY_3 * wcorr[2] + predictY_4 * wcorr[3]
         
-
+        del Variable_PredictX
+        torch.cuda.empty_cache()
+            
+        return predictY_1 * wcorr[0] + predictY_2 * wcorr[1] + predictY_3 * wcorr[2] + predictY_4 * wcorr[3]
 
 
 class CNNMode_Kernal_2(nn.Module):
