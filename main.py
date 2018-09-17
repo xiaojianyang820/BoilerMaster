@@ -138,7 +138,7 @@ class MainModel(object):
         dayDelta = (endDate-startDate).days
         for k in range(dayDelta//self.interval):
             if len(splitStages) == 0:
-                splitStages.append(startDate,startDate+datetime.timedelta(self.interval))
+                splitStages.append((startDate,startDate+datetime.timedelta(self.interval)))
             else:
                 startSplit = splitStages[-1][1]
                 splitStages.append((startSplit,startSplit+datetime.timedelta(self.interval)))
