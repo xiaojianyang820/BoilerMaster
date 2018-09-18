@@ -21,7 +21,7 @@ class MainModel(object):
             对控制系统的初始化参数进行设定
             
             reStartModel:Boolean
-              指明当前的控制系统是否是重新启动
+              指明当前的控制系统是否是重新启动+
               
             startDate:Str
               如果当前的控制系统是重新启动的话，那么加载历史数据的起始时刻是哪里，
